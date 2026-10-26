@@ -96,6 +96,7 @@ app.use(
 
         connectSrc: [
           "'self'",
+          supabaseOrigin,
         ],
       },
     },

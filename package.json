@@ -2,7 +2,7 @@
   "name": "joyboy",
   "version": "1.0.0",
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "description": "Private video-sharing platform for small communities",
   "main": "server.js",

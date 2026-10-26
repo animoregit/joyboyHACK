@@ -30,7 +30,7 @@ async function callStorageGateway(action, payload) {
 
   let response;
   try {
-    response = await fetch(`${baseUrl.replace(/\\/+$/, '')}/functions/v1/joyboy-media`, {
+    response = await fetch(`${baseUrl.replace(/\/+$/, '')}/functions/v1/joyboy-media`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

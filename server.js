@@ -20,10 +20,6 @@ const supabaseOrigin = process.env.SUPABASE_URL
   ? new URL(process.env.SUPABASE_URL).origin
   : 'https://*.supabase.co';
 
-if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
-  throw new Error('SESSION_SECRET must be configured in the deployment environment.');
-}
-
 const app = express();
 
 // ─────────────────────────────────────────────
@@ -348,7 +344,7 @@ async function startServer() {
   }
 }
 
-if (require.main === module && !process.env.VERCEL) {
+if (require.main === module && process.env.VERCEL !== '1' && !process.env.VERCEL_ENV && !process.env.VERCEL_URL) {
   startServer();
 }
 

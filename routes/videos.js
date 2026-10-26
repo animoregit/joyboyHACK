@@ -2,11 +2,16 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const { body, validationResult } = require('express-validator');
+const { randomUUID } = require('crypto');
 
 const { pool } = require('../config/database');
 const { requireAuth, requireOwnerOrAdmin } = require('../middleware/auth');
-const { videoUpload } = require('../middleware/upload');
-const { generateThumbnail } = require('../utils/thumbnail');
+const {
+  getSupabaseAdmin,
+  isUserStoragePath,
+  VIDEO_BUCKET,
+  THUMBNAIL_BUCKET,
+} = require('../config/supabase');
 
 const router = express.Router();
 
@@ -112,142 +117,144 @@ router.get('/upload', requireAuth, (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// POST /videos/upload — Process upload
+// POST /videos/upload/sign — Create one-use upload URL
 // ─────────────────────────────────────────────
 
-router.post('/upload', requireAuth, (req, res) => {
-  videoUpload.single('video')(req, res, async (err) => {
+router.post('/upload/sign', requireAuth, async (req, res) => {
+  try {
+    const { kind, filename, mimeType, size } = req.body || {};
+    const byteSize = Number(size);
+    const ext = path.extname(String(filename || '')).toLowerCase();
 
-    if (err) {
-      return res.render('videos/upload', {
-        title: 'Upload Video',
-        errors: [{ msg: err.message }],
+    const videoTypes = new Set([
+      'video/mp4',
+      'video/webm',
+      'video/quicktime',
+      'video/x-msvideo',
+      'video/x-matroska',
+      'video/ogg',
+    ]);
+    const videoExtensions = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.ogv']);
+    const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+    const isThumbnail = kind === 'thumbnail';
+    const maxSize = isThumbnail ? 5 * 1024 * 1024 : 50 * 1024 * 1024;
+
+    if (!['video', 'thumbnail'].includes(kind)) {
+      return res.status(400).json({ error: 'Invalid upload type.' });
+    }
+    if (!Number.isSafeInteger(byteSize) || byteSize <= 0 || byteSize > maxSize) {
+      return res.status(413).json({
+        error: isThumbnail ? 'Thumbnail must be smaller than 5 MB.' : 'Video uploads are limited to 50 MB on the current storage plan.',
       });
     }
-
-    if (!req.file) {
-      return res.render('videos/upload', {
-        title: 'Upload Video',
-        errors: [
-          { msg: 'Please select a video file.' }
-        ],
-      });
+    if (isThumbnail ? (!imageTypes.has(mimeType) || ext !== '.jpg') : (!videoTypes.has(mimeType) || !videoExtensions.has(ext))) {
+      return res.status(415).json({ error: 'Unsupported file type.' });
     }
 
-    const { title, description, visibility } = req.body;
+    const bucket = isThumbnail ? THUMBNAIL_BUCKET : VIDEO_BUCKET;
+    const folder = isThumbnail ? 'thumbnails' : 'videos';
+    const objectPath = `users/${req.session.userId}/${folder}/${randomUUID()}${ext}`;
+    const supabase = getSupabaseAdmin();
+    const { data, error } = await supabase.storage.from(bucket).createSignedUploadUrl(objectPath);
 
-    // ───────────────────────────────────────
-    // Validate title
-    // ───────────────────────────────────────
+    if (error || !data?.token) {
+      console.error('Supabase signed-upload URL error:', error?.message || 'No upload token returned');
+      return res.status(502).json({ error: 'Could not prepare a secure upload. Please try again.' });
+    }
 
-    if (!title || title.trim().length === 0) {
-      if (fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
+    const signedUrl = data.signedUrl && /^https?:\/\//i.test(data.signedUrl)
+      ? data.signedUrl
+      : `${process.env.SUPABASE_URL.replace(/\/$/, '')}/storage/v1/object/upload/sign/${bucket}/${objectPath.split('/').map(encodeURIComponent).join('/')}?token=${encodeURIComponent(data.token)}`;
+
+    return res.json({
+      path: objectPath,
+      signedUrl,
+      publishableKey: process.env.SUPABASE_PUBLISHABLE_KEY || '',
+    });
+  } catch (error) {
+    if (error.code === 'SUPABASE_STORAGE_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'Supabase Storage is not configured yet. Add SUPABASE_SERVICE_ROLE_KEY in Vercel project environment variables.' });
+    }
+    console.error('Create video upload URL error:', error);
+    return res.status(500).json({ error: 'Could not prepare the upload.' });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /videos/upload/complete — Save uploaded media metadata
+// ─────────────────────────────────────────────
+
+router.post('/upload/complete', requireAuth, async (req, res) => {
+  const { title, description, visibility, videoPath, thumbnailPath, duration, fileSize, mimeType } = req.body || {};
+  const userId = req.session.userId;
+
+  if (!title || typeof title !== 'string' || !title.trim()) {
+    return res.status(400).json({ error: 'Video title is required.' });
+  }
+  if (!isUserStoragePath(videoPath, userId) || !videoPath.includes('/videos/')) {
+    return res.status(400).json({ error: 'Invalid video storage path.' });
+  }
+  if (thumbnailPath && (!isUserStoragePath(thumbnailPath, userId) || !thumbnailPath.includes('/thumbnails/'))) {
+    return res.status(400).json({ error: 'Invalid thumbnail storage path.' });
+  }
+  const byteSize = Number(fileSize);
+  if (!Number.isSafeInteger(byteSize) || byteSize <= 0 || byteSize > 50 * 1024 * 1024) {
+    return res.status(400).json({ error: 'Invalid video size.' });
+  }
+  const allowedMimeTypes = new Set([
+    'video/mp4', 'video/webm', 'video/quicktime',
+    'video/x-msvideo', 'video/x-matroska', 'video/ogg',
+  ]);
+  if (!allowedMimeTypes.has(mimeType)) {
+    return res.status(415).json({ error: 'Unsupported video format.' });
+  }
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: signedCheck, error: signedError } = await supabase.storage
+      .from(VIDEO_BUCKET).createSignedUrl(videoPath, 60);
+    if (signedError || !signedCheck?.signedUrl) {
+      return res.status(400).json({ error: 'Uploaded video was not found in storage. Please retry the upload.' });
+    }
+
+    if (thumbnailPath) {
+      const { data: thumbCheck, error: thumbError } = await supabase.storage
+        .from(THUMBNAIL_BUCKET).createSignedUrl(thumbnailPath, 60);
+      if (thumbError || !thumbCheck?.signedUrl) {
+        console.warn('Uploaded thumbnail could not be verified; saving video without a thumbnail.');
       }
-
-      return res.render('videos/upload', {
-        title: 'Upload Video',
-        errors: [
-          { msg: 'Video title is required.' }
-        ],
-      });
     }
 
-    try {
+    const cleanDuration = Number(duration);
+    const result = await pool.query(
+      `INSERT INTO videos (
+        title, description, filename, thumbnail, duration, file_size,
+        mime_type, user_id, visibility
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING id`,
+      [
+        title.trim().slice(0, 200),
+        typeof description === 'string' ? description.trim().slice(0, 5000) || null : null,
+        videoPath,
+        thumbnailPath || null,
+        Number.isFinite(cleanDuration) && cleanDuration >= 0 ? cleanDuration : null,
+        byteSize,
+        mimeType,
+        userId,
+        visibility === 'private' ? 'private' : 'public',
+      ]
+    );
 
-      // ─────────────────────────────────────
-      // Generate thumbnail
-      // ─────────────────────────────────────
-
-      const thumbnailFilename =
-        path.basename(
-          req.file.filename,
-          path.extname(req.file.filename)
-        ) + '.jpg';
-
-      const {
-        thumbnailPath,
-        duration
-      } = await generateThumbnail(
-        req.file.path,
-        thumbnailFilename
-      );
-
-      // ─────────────────────────────────────
-      // Insert video into Neon
-      // ─────────────────────────────────────
-
-      const result = await pool.query(
-        `
-        INSERT INTO videos (
-          title,
-          description,
-          filename,
-          thumbnail,
-          duration,
-          file_size,
-          mime_type,
-          user_id,
-          visibility
-        )
-        VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9
-        )
-        RETURNING id
-        `,
-        [
-          title.trim(),
-          description ? description.trim() : null,
-          req.file.filename,
-          thumbnailPath,
-          duration,
-          req.file.size,
-          req.file.mimetype,
-          req.session.userId,
-          visibility === 'private'
-            ? 'private'
-            : 'public',
-        ]
-      );
-
-      const videoId = result.rows[0].id;
-
-      req.session.successMessage =
-        'Video uploaded successfully!';
-
-      res.redirect(`/videos/${videoId}`);
-
-    } catch (error) {
-
-      console.error('Upload error:', error);
-
-      // Clean up uploaded video
-      if (
-        req.file &&
-        req.file.path &&
-        fs.existsSync(req.file.path)
-      ) {
-        fs.unlinkSync(req.file.path);
-      }
-
-      res.render('videos/upload', {
-        title: 'Upload Video',
-        errors: [
-          {
-            msg: 'Failed to process video. Please try again.'
-          }
-        ],
-      });
+    req.session.successMessage = 'Video uploaded successfully!';
+    return res.status(201).json({ videoId: result.rows[0].id, redirectUrl: `/videos/${result.rows[0].id}` });
+  } catch (error) {
+    if (error.code === 'SUPABASE_STORAGE_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'Supabase Storage is not configured yet. Add SUPABASE_SERVICE_ROLE_KEY in Vercel project environment variables.' });
     }
-  });
+    console.error('Finalize video upload error:', error);
+    return res.status(500).json({ error: 'Upload completed, but saving video details failed. Please contact the site admin before retrying.' });
+  }
 });
 
 // ─────────────────────────────────────────────
@@ -599,92 +606,55 @@ router.post(
 );
 
 // ─────────────────────────────────────────────
-// GET /videos/stream/:filename
+// GET /videos/stream/:id — Securely stream stored media
 // ─────────────────────────────────────────────
 
-router.get(
-  '/stream/:filename',
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const filename = path.basename(req.params.filename);
-      const result = await pool.query(
-        `SELECT user_id, visibility, mime_type
-         FROM videos
-         WHERE filename = $1
-         LIMIT 1`,
-        [filename]
-      );
-      const video = result.rows[0];
-      if (!video) return res.status(404).send('Video not found.');
-
-      const currentUser = res.locals.currentUser;
-      if (
-        video.visibility === 'private' &&
-        (!currentUser ||
-          String(video.user_id) !== String(currentUser.id) &&
-          currentUser.role !== 'admin')
-      ) {
-        return res.status(403).send('This video is private.');
-      }
-
-      const videoPath = path.join(__dirname, '..', 'uploads', 'videos', filename);
-      const stat = await fs.promises.stat(videoPath).catch(() => null);
-      if (!stat || !stat.isFile()) return res.status(404).send('Video file not found.');
-
-      const fileSize = stat.size;
-      const contentType = video.mime_type || 'application/octet-stream';
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-
-      const range = req.headers.range;
-      if (!range) {
-        res.setHeader('Content-Length', fileSize);
-        return fs.createReadStream(videoPath).on('error', next).pipe(res);
-      }
-
-      const match = /^bytes=(\\d*)-(\\d*)$/.exec(range);
-      if (!match || (!match[1] && !match[2])) {
-        res.setHeader('Content-Range', `bytes */${fileSize}`);
-        return res.sendStatus(416);
-      }
-
-      let start;
-      let end;
-      if (!match[1]) {
-        const suffixLength = Number(match[2]);
-        if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
-          res.setHeader('Content-Range', `bytes */${fileSize}`);
-          return res.sendStatus(416);
-        }
-        start = Math.max(fileSize - suffixLength, 0);
-        end = fileSize - 1;
-      } else {
-        start = Number(match[1]);
-        end = match[2] ? Number(match[2]) : fileSize - 1;
-      }
-
-      if (
-        !Number.isSafeInteger(start) ||
-        !Number.isSafeInteger(end) ||
-        start < 0 ||
-        start >= fileSize ||
-        end < start
-      ) {
-        res.setHeader('Content-Range', `bytes */${fileSize}`);
-        return res.sendStatus(416);
-      }
-
-      end = Math.min(end, fileSize - 1);
-      res.status(206);
-      res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
-      res.setHeader('Content-Length', end - start + 1);
-      return fs.createReadStream(videoPath, { start, end }).on('error', next).pipe(res);
-    } catch (error) {
-      return next(error);
-    }
+router.get('/stream/:id', requireAuth, async (req, res, next) => {
+  const videoId = Number.parseInt(req.params.id, 10);
+  if (!Number.isSafeInteger(videoId) || videoId <= 0) {
+    return res.status(404).send('Video not found.');
   }
-);
 
+  try {
+    const result = await pool.query('SELECT id, user_id, filename, mime_type, visibility FROM videos WHERE id = $1 LIMIT 1', [videoId]);
+    const video = result.rows[0];
+    if (!video) return res.status(404).send('Video not found.');
+
+    const currentUser = res.locals.currentUser;
+    if (
+      video.visibility === 'private' &&
+      (!currentUser ||
+        String(video.user_id) !== String(currentUser.id) &&
+        currentUser.role !== 'admin')
+    ) {
+      return res.status(403).send('This video is private.');
+    }
+
+    // New uploads use private Supabase Storage objects. Signed URLs let the
+    // browser perform range requests directly against Supabase, avoiding the
+    // Vercel serverless response-size limit.
+    if (typeof video.filename === 'string' && video.filename.startsWith(`users/${video.user_id}/videos/`)) {
+      const supabase = getSupabaseAdmin();
+      const { data, error } = await supabase.storage.from(VIDEO_BUCKET).createSignedUrl(video.filename, 60 * 60);
+      if (error || !data?.signedUrl) {
+        console.error('Could not sign video URL:', error?.message || 'No signed URL returned');
+        return res.status(502).send('Video storage is temporarily unavailable.');
+      }
+      return res.redirect(302, data.signedUrl);
+    }
+
+    // Compatibility for old public videos whose files still exist on the old
+    // host. Private legacy files are never redirected to public static storage.
+    const legacyBase = (process.env.LEGACY_MEDIA_BASE_URL || '').replace(/\/$/, '');
+    if (video.visibility === 'public' && legacyBase && video.filename && path.basename(video.filename) === video.filename) {
+      return res.redirect(302, `${legacyBase}/uploads/videos/${encodeURIComponent(video.filename)}`);
+    }
+    return res.status(410).send('This older video file is not in persistent storage yet.');
+  } catch (error) {
+    if (error.code === 'SUPABASE_STORAGE_NOT_CONFIGURED') {
+      return res.status(503).send('Supabase Storage is not configured yet.');
+    }
+    return next(error);
+  }
+});
 module.exports = router;

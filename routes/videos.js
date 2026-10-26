@@ -552,33 +552,23 @@ router.post(
         });
       }
 
-      // Delete local video file
-      if (video.filename) {
-        const videoPath = path.join(
-          __dirname,
-          '..',
-          'uploads',
-          'videos',
-          video.filename
-        );
-
-        if (fs.existsSync(videoPath)) {
-          fs.unlinkSync(videoPath);
-        }
+      // Delete persistent cloud objects, or clean up legacy local files.
+      if (video.filename && String(video.filename).startsWith(`users/${video.user_id}/videos/`)) {
+        const supabase = getSupabaseAdmin();
+        const { error } = await supabase.storage.from(VIDEO_BUCKET).remove([video.filename]);
+        if (error) throw error;
+      } else if (video.filename && path.basename(video.filename) === video.filename) {
+        const localVideo = path.join(__dirname, '..', 'uploads', 'videos', video.filename);
+        if (fs.existsSync(localVideo)) fs.unlinkSync(localVideo);
       }
 
-      // Delete local thumbnail
-      if (video.thumbnail) {
-        const thumbnailPath = path.join(
-          __dirname,
-          '..',
-          'uploads',
-          video.thumbnail
-        );
-
-        if (fs.existsSync(thumbnailPath)) {
-          fs.unlinkSync(thumbnailPath);
-        }
+      if (video.thumbnail && String(video.thumbnail).startsWith(`users/${video.user_id}/thumbnails/`)) {
+        const supabase = getSupabaseAdmin();
+        const { error } = await supabase.storage.from(THUMBNAIL_BUCKET).remove([video.thumbnail]);
+        if (error) console.warn('Thumbnail cleanup failed:', error.message);
+      } else if (video.thumbnail && !/^https?:\\/\\//i.test(video.thumbnail)) {
+        const localThumbnail = path.join(__dirname, '..', 'uploads', path.basename(video.thumbnail));
+        if (fs.existsSync(localThumbnail)) fs.unlinkSync(localThumbnail);
       }
 
       // Delete database record

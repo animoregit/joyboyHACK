@@ -38,22 +38,23 @@ const PORT = process.env.PORT || 3000;
 // Ensure directories exist
 // ─────────────────────────────────────────────
 
-const dirs = [
-  'uploads/videos',
-  'uploads/thumbnails',
-  'uploads/avatars',
-  'data',
-];
+// Vercel's deployment filesystem is read-only. New uploads are stored in
+// Supabase Storage; local folders are only needed for local development.
+if (!process.env.VERCEL) {
+  const dirs = [
+    'uploads/videos',
+    'uploads/thumbnails',
+    'uploads/avatars',
+    'data',
+  ];
 
-dirs.forEach((dir) => {
-  const fullPath = path.join(__dirname, dir);
-
-  if (!fs.existsSync(fullPath)) {
-    fs.mkdirSync(fullPath, {
-      recursive: true,
-    });
-  }
-});
+  dirs.forEach((dir) => {
+    const fullPath = path.join(__dirname, dir);
+    if (!fs.existsSync(fullPath)) {
+      fs.mkdirSync(fullPath, { recursive: true });
+    }
+  });
+}
 
 // ─────────────────────────────────────────────
 // Security headers
@@ -156,12 +157,9 @@ app.use(
   )
 );
 
-app.use(
-  '/uploads',
-  express.static(
-    path.join(__dirname, 'uploads')
-  )
-);
+if (!process.env.VERCEL) {
+  app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+}
 
 // ─────────────────────────────────────────────
 // View engine

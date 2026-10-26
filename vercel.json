@@ -1,13 +1,9 @@
 {
-  "functions": {
-    "api/index.js": {
-      "includeFiles": "views/**/*"
-    }
-  },
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
-      "source": "/(.*)",
-      "destination": "/api/index"
+      "source": "/:path*",
+      "destination": "https://joyboyhack.onrender.com/:path*"
     }
   ]
 }

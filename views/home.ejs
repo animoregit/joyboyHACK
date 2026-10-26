@@ -37,7 +37,7 @@
         <a href="/videos/<%= video.id %>" class="video-card" id="video-card-<%= video.id %>">
           <div class="video-card-thumb">
             <% if (video.thumbnail) { %>
-              <img src="/uploads/<%= video.thumbnail %>" alt="<%= video.title %>" loading="lazy">
+              <img src="<%= helpers.thumbnailUrl(video.thumbnail) %>" alt="<%= video.title %>" loading="lazy">
             <% } else { %>
               <div class="thumb-placeholder">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
@@ -52,7 +52,7 @@
           <div class="video-card-info">
             <div class="video-card-avatar">
               <% if (video.avatar) { %>
-                <img src="/uploads/avatars/<%= video.avatar %>" alt="<%= video.username %>">
+                <img src="<%= helpers.avatarUrl(video.avatar) %>" alt="<%= video.username %>">
               <% } else { %>
                 <div class="avatar-default avatar-sm"><%= video.username.charAt(0).toUpperCase() %></div>
               <% } %>

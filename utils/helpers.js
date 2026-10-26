@@ -85,6 +85,37 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+
+function publicStorageUrl(bucket, key, legacyPath) {
+  if (!key) return '';
+  if (/^https?:\/\//i.test(key)) return key;
+
+  const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
+  const legacyBase = (process.env.LEGACY_MEDIA_BASE_URL || '').replace(/\/$/, '');
+  const pathParts = String(key).split('/').filter(Boolean).map(encodeURIComponent);
+
+  if (String(key).startsWith('users/') && supabaseUrl) {
+    return `${supabaseUrl}/storage/v1/object/public/${bucket}/${pathParts.join('/')}`;
+  }
+
+  if (legacyBase) {
+    return `${legacyBase}/uploads/${legacyPath || pathParts.join('/')}`;
+  }
+
+  return `/uploads/${legacyPath || pathParts.join('/')}`;
+}
+
+function thumbnailUrl(key) {
+  return publicStorageUrl('joyboy-thumbnails', key, key);
+}
+
+function avatarUrl(key) {
+  if (key && String(key).startsWith('users/')) {
+    return publicStorageUrl('joyboy-avatars', key, key);
+  }
+  return publicStorageUrl('joyboy-avatars', key, `avatars/${key}`);
+}
+
 module.exports = {
   formatDuration,
   formatFileSize,
@@ -92,4 +123,6 @@ module.exports = {
   truncate,
   formatViews,
   escapeHtml,
+  thumbnailUrl,
+  avatarUrl,
 };

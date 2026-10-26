@@ -123,6 +123,18 @@ app.use(
   })
 );
 
+// Fail clearly instead of triggering a serverless function crash when required
+// deployment configuration is missing.
+app.use((req, res, next) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).send('JoyBoy is not configured: add DATABASE_URL (the existing Neon PostgreSQL connection string) to Vercel environment variables.');
+  }
+  if (!process.env.SESSION_SECRET) {
+    return res.status(503).send('JoyBoy is not configured: add SESSION_SECRET to Vercel environment variables.');
+  }
+  next();
+});
+
 // ─────────────────────────────────────────────
 // Sessions
 // ─────────────────────────────────────────────

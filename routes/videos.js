@@ -168,7 +168,7 @@ router.post('/upload/sign', requireAuth, async (req, res) => {
     });
   } catch (error) {
     if (error.code === 'SUPABASE_STORAGE_NOT_CONFIGURED') {
-      return res.status(503).json({ error: 'Supabase Storage is not configured yet. Add SUPABASE_SERVICE_ROLE_KEY in Vercel project environment variables.' });
+      return res.status(503).json({ error: 'Media storage is temporarily unavailable. Please try again later.' });
     }
     console.error('Create video upload URL error:', error);
     return res.status(500).json({ error: 'Could not prepare the upload.' });
@@ -242,7 +242,7 @@ router.post('/upload/complete', requireAuth, async (req, res) => {
     return res.status(201).json({ videoId: result.rows[0].id, redirectUrl: `/videos/${result.rows[0].id}` });
   } catch (error) {
     if (error.code === 'SUPABASE_STORAGE_NOT_CONFIGURED') {
-      return res.status(503).json({ error: 'Supabase Storage is not configured yet. Add SUPABASE_SERVICE_ROLE_KEY in Vercel project environment variables.' });
+      return res.status(503).json({ error: 'Media storage is temporarily unavailable. Please try again later.' });
     }
     console.error('Finalize video upload error:', error);
     return res.status(500).json({ error: 'Upload completed, but saving video details failed. Please contact the site admin before retrying.' });

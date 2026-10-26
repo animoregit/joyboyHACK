@@ -2,8 +2,8 @@
   "name": "joyboy",
   "version": "1.0.0",
   "engines": {
-  "node": "20.x"
-},
+    "node": "20.x"
+  },
   "description": "Private video-sharing platform for small communities",
   "main": "server.js",
   "scripts": {
@@ -27,7 +27,9 @@
     "helmet": "^8.0.0",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.23.0",
-    "uuid": "^11.0.3"
+    "uuid": "^11.0.3",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
   },
   "keywords": [
     "video",

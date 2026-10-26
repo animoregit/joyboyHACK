@@ -214,6 +214,10 @@ document.addEventListener('DOMContentLoaded', () => {
         this.querySelector('[name="title"]')?.focus();
         return;
       }
+      if (!['video/mp4', 'video/webm'].includes(videoFile.type)) {
+        if (progressText) progressText.textContent = 'Use an MP4 or WebM video for reliable browser playback.';
+        return;
+      }
       if (videoFile.size > 50 * 1024 * 1024) {
         if (progressText) progressText.textContent = 'Video uploads are limited to 50 MB on the current storage plan.';
         return;

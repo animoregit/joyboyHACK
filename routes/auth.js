@@ -1,5 +1,5 @@
 const express = require('express');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 
@@ -104,12 +104,31 @@ router.post(
         });
       }
 
-      // Create login session
-      req.session.userId = user.id;
-      req.session.successMessage =
-        `Welcome back, ${user.username}!`;
+      // Rotate the session ID after authentication to prevent session fixation.
+      req.session.regenerate((sessionError) => {
+        if (sessionError) {
+          console.error('Session regeneration error:', sessionError);
+          return res.status(500).render('error', {
+            title: '500 — Server Error',
+            message: 'Something went wrong while logging in.',
+            code: 500,
+          });
+        }
 
-      return res.redirect('/videos');
+        req.session.userId = user.id;
+        req.session.successMessage = `Welcome back, ${user.username}!`;
+        req.session.save((saveError) => {
+          if (saveError) {
+            console.error('Session save error:', saveError);
+            return res.status(500).render('error', {
+              title: '500 — Server Error',
+              message: 'Something went wrong while logging in.',
+              code: 500,
+            });
+          }
+          return res.redirect('/videos');
+        });
+      });
 
     } catch (err) {
       console.error('Login error:', err);
@@ -253,16 +272,9 @@ router.post(
       const passwordHash = await bcrypt.hash(password, 12);
 
       // ───────────────────────────────────────
-      // First registered account becomes admin
-      // ───────────────────────────────────────
-
-      const countResult = await pool.query(
-        'SELECT COUNT(*)::integer AS count FROM users'
-      );
-
-      const userCount = countResult.rows[0].count;
-
-      const role = userCount === 0 ? 'admin' : 'user';
+      // Public registration must never grant administrator privileges.
+      // Promote a trusted account manually or through a protected admin workflow.
+      const role = 'user';
 
       // ───────────────────────────────────────
       // Create user
@@ -287,18 +299,31 @@ router.post(
       const userId = insertResult.rows[0].id;
 
       // ───────────────────────────────────────
-      // Auto-login
-      // ───────────────────────────────────────
+      // Auto-login with a fresh session ID after account creation.
+      req.session.regenerate((sessionError) => {
+        if (sessionError) {
+          console.error('Registration session error:', sessionError);
+          return res.status(500).render('error', {
+            title: '500 — Server Error',
+            message: 'Your account was created, but automatic login failed. Please log in.',
+            code: 500,
+          });
+        }
 
-      req.session.userId = userId;
-
-      req.session.successMessage =
-        `Welcome to JoyBoy, ${username}!` +
-        (role === 'admin'
-          ? ' You are the site admin.'
-          : '');
-
-      return res.redirect('/videos');
+        req.session.userId = userId;
+        req.session.successMessage = `Welcome to JoyBoy, ${username}!`;
+        req.session.save((saveError) => {
+          if (saveError) {
+            console.error('Registration session save error:', saveError);
+            return res.status(500).render('error', {
+              title: '500 — Server Error',
+              message: 'Your account was created, but automatic login failed. Please log in.',
+              code: 500,
+            });
+          }
+          return res.redirect('/videos');
+        });
+      });
 
     } catch (err) {
       console.error('Registration error:', err);
@@ -333,12 +358,23 @@ router.post(
 // ─────────────────────────────────────────────
 
 router.post('/logout', (req, res) => {
+  if (!req.session) {
+    res.clearCookie('connect.sid', { path: '/' });
+    return res.redirect('/auth/login');
+  }
+
   req.session.destroy((err) => {
     if (err) {
       console.error('Session destroy error:', err);
+      return res.status(500).render('error', {
+        title: '500 — Server Error',
+        message: 'Could not log out safely. Please try again.',
+        code: 500,
+      });
     }
 
-    res.redirect('/auth/login');
+    res.clearCookie('connect.sid', { path: '/' });
+    return res.redirect('/auth/login');
   });
 });
 

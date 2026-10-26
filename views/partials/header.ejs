@@ -46,7 +46,7 @@
         <div class="nav-user-menu" id="user-menu">
           <button class="nav-avatar-btn" id="avatar-btn" aria-label="User menu">
             <% if (currentUser.avatar) { %>
-              <img src="/uploads/avatars/<%= currentUser.avatar %>" alt="<%= currentUser.username %>" class="nav-avatar">
+              <img src="<%= helpers.avatarUrl(currentUser.avatar) %>" alt="<%= currentUser.username %>" class="nav-avatar">
             <% } else { %>
               <div class="nav-avatar nav-avatar-default"><%= currentUser.username.charAt(0).toUpperCase() %></div>
             <% } %>

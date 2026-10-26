@@ -301,7 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       try {
-        const userId = editProfileForm.action.match(/\\/users\\/(\\d+)\\/edit/)?.[1];
+        const userId = editProfileForm.action.match(/\/users\/(\d+)\/edit/)?.[1];
         if (!userId) throw new Error('Could not identify the profile.');
         const signed = await requestSignedUpload('/users/' + userId + '/avatar-sign', 'avatar', file);
         await uploadDirectly(signed, file);

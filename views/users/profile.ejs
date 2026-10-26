@@ -5,7 +5,7 @@
   <div class="profile-header">
     <div class="profile-avatar-section">
       <% if (profileUser.avatar) { %>
-        <img src="/uploads/avatars/<%= profileUser.avatar %>" alt="<%= profileUser.username %>" class="profile-avatar">
+        <img src="<%= helpers.avatarUrl(profileUser.avatar) %>" alt="<%= profileUser.username %>" class="profile-avatar">
       <% } else { %>
         <div class="avatar-default avatar-lg"><%= profileUser.username.charAt(0).toUpperCase() %></div>
       <% } %>
@@ -70,7 +70,7 @@
         <a href="/videos/<%= video.id %>" class="video-card">
           <div class="video-card-thumb">
             <% if (video.thumbnail) { %>
-              <img src="/uploads/<%= video.thumbnail %>" alt="<%= video.title %>" loading="lazy">
+              <img src="<%= helpers.thumbnailUrl(video.thumbnail) %>" alt="<%= video.title %>" loading="lazy">
             <% } else { %>
               <div class="thumb-placeholder">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">

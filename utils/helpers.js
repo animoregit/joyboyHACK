@@ -88,10 +88,10 @@ function escapeHtml(str) {
 
 function publicStorageUrl(bucket, key, legacyPath) {
   if (!key) return '';
-  if (/^https?:\\/\\//i.test(key)) return key;
+  if (/^https?:\/\//i.test(key)) return key;
 
-  const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\\/$/, '');
-  const legacyBase = (process.env.LEGACY_MEDIA_BASE_URL || '').replace(/\\/$/, '');
+  const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
+  const legacyBase = (process.env.LEGACY_MEDIA_BASE_URL || '').replace(/\/$/, '');
   const pathParts = String(key).split('/').filter(Boolean).map(encodeURIComponent);
 
   if (String(key).startsWith('users/') && supabaseUrl) {

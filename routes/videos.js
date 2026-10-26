@@ -605,78 +605,84 @@ router.post(
 router.get(
   '/stream/:filename',
   requireAuth,
-  (req, res) => {
-
-    const filename = path.basename(req.params.filename);
-
-    const videoPath = path.join(
-      __dirname,
-      '..',
-      'uploads',
-      'videos',
-      filename
-    );
-
-    if (!fs.existsSync(videoPath)) {
-      return res.status(404).send(
-        'Video file not found.'
+  async (req, res, next) => {
+    try {
+      const filename = path.basename(req.params.filename);
+      const result = await pool.query(
+        `SELECT user_id, visibility, mime_type
+         FROM videos
+         WHERE filename = $1
+         LIMIT 1`,
+        [filename]
       );
-    }
+      const video = result.rows[0];
+      if (!video) return res.status(404).send('Video not found.');
 
-    const stat = fs.statSync(videoPath);
+      const currentUser = res.locals.currentUser;
+      if (
+        video.visibility === 'private' &&
+        (!currentUser ||
+          String(video.user_id) !== String(currentUser.id) &&
+          currentUser.role !== 'admin')
+      ) {
+        return res.status(403).send('This video is private.');
+      }
 
-    const fileSize = stat.size;
-    const range = req.headers.range;
+      const videoPath = path.join(__dirname, '..', 'uploads', 'videos', filename);
+      const stat = await fs.promises.stat(videoPath).catch(() => null);
+      if (!stat || !stat.isFile()) return res.status(404).send('Video file not found.');
 
-    if (range) {
+      const fileSize = stat.size;
+      const contentType = video.mime_type || 'application/octet-stream';
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
 
-      const parts = range
-        .replace(/bytes=/, '')
-        .split('-');
+      const range = req.headers.range;
+      if (!range) {
+        res.setHeader('Content-Length', fileSize);
+        return fs.createReadStream(videoPath).on('error', next).pipe(res);
+      }
 
-      const start = parseInt(parts[0], 10);
+      const match = /^bytes=(\\d*)-(\\d*)$/.exec(range);
+      if (!match || (!match[1] && !match[2])) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.sendStatus(416);
+      }
 
-      const end = parts[1]
-        ? parseInt(parts[1], 10)
-        : fileSize - 1;
-
-      const chunksize = end - start + 1;
-
-      const file = fs.createReadStream(
-        videoPath,
-        {
-          start,
-          end,
+      let start;
+      let end;
+      if (!match[1]) {
+        const suffixLength = Number(match[2]);
+        if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+          res.setHeader('Content-Range', `bytes */${fileSize}`);
+          return res.sendStatus(416);
         }
-      );
+        start = Math.max(fileSize - suffixLength, 0);
+        end = fileSize - 1;
+      } else {
+        start = Number(match[1]);
+        end = match[2] ? Number(match[2]) : fileSize - 1;
+      }
 
-      const head = {
-        'Content-Range':
-          `bytes ${start}-${end}/${fileSize}`,
+      if (
+        !Number.isSafeInteger(start) ||
+        !Number.isSafeInteger(end) ||
+        start < 0 ||
+        start >= fileSize ||
+        end < start
+      ) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.sendStatus(416);
+      }
 
-        'Accept-Ranges': 'bytes',
-
-        'Content-Length': chunksize,
-
-        'Content-Type':
-          'video/mp4',
-      };
-
-      res.writeHead(206, head);
-
-      file.pipe(res);
-
-    } else {
-
-      const head = {
-        'Content-Length': fileSize,
-        'Content-Type': 'video/mp4',
-      };
-
-      res.writeHead(200, head);
-
-      fs.createReadStream(videoPath)
-        .pipe(res);
+      end = Math.min(end, fileSize - 1);
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+      res.setHeader('Content-Length', end - start + 1);
+      return fs.createReadStream(videoPath, { start, end }).on('error', next).pipe(res);
+    } catch (error) {
+      return next(error);
     }
   }
 );

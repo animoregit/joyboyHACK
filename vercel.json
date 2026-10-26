@@ -3,7 +3,7 @@
   "rewrites": [
     {
       "source": "/",
-      "destination": "https://joyboyhack.onrender.com/"
+      "destination": "https://joyboyhack.onrender.com/auth/login"
     },
     {
       "source": "/:path*",

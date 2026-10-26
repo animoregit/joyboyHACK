@@ -5,8 +5,8 @@
     <!-- Video Player -->
     <div class="video-player-wrapper" id="video-player-wrapper">
       <video id="video-player" class="video-player" controls preload="metadata"
-             poster="<%= video.thumbnail ? '/uploads/' + video.thumbnail : '' %>">
-        <source src="/videos/stream/<%= video.filename %>" type="<%= video.mime_type %>">
+             poster="<%= video.thumbnail ? helpers.thumbnailUrl(video.thumbnail) : '' %>">
+        <source src="/videos/stream/<%= video.id %>" type="<%= video.mime_type %>">
         Your browser does not support the video tag.
       </video>
     </div>
@@ -51,7 +51,7 @@
       <div class="watch-uploader">
         <a href="/users/<%= video.uploader_id %>" class="uploader-link">
           <% if (video.avatar) { %>
-            <img src="/uploads/avatars/<%= video.avatar %>" alt="<%= video.username %>" class="uploader-avatar">
+            <img src="<%= helpers.avatarUrl(video.avatar) %>" alt="<%= video.username %>" class="uploader-avatar">
           <% } else { %>
             <div class="avatar-default avatar-md"><%= video.username.charAt(0).toUpperCase() %></div>
           <% } %>
@@ -89,7 +89,7 @@
           <a href="/videos/<%= related.id %>" class="sidebar-video-card">
             <div class="sidebar-thumb">
               <% if (related.thumbnail) { %>
-                <img src="/uploads/<%= related.thumbnail %>" alt="<%= related.title %>" loading="lazy">
+                <img src="<%= helpers.thumbnailUrl(related.thumbnail) %>" alt="<%= related.title %>" loading="lazy">
               <% } else { %>
                 <div class="thumb-placeholder thumb-placeholder-sm">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="24" height="24">

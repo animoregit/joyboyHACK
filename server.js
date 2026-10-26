@@ -2,18 +2,27 @@ require('dotenv').config();
 
 const express = require('express');
 const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
+const PgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
 const path = require('path');
 const fs = require('fs');
 
 const {
+  pool,
   initDatabase,
   testConnection,
 } = require('./config/database');
 
 const { attachUser } = require('./middleware/auth');
 const helpers = require('./utils/helpers');
+
+const supabaseOrigin = process.env.SUPABASE_URL
+  ? new URL(process.env.SUPABASE_URL).origin
+  : 'https://*.supabase.co';
+
+if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
+  throw new Error('SESSION_SECRET must be configured in the deployment environment.');
+}
 
 const app = express();
 
@@ -76,11 +85,13 @@ app.use(
           "'self'",
           'data:',
           'blob:',
+          supabaseOrigin,
         ],
 
         mediaSrc: [
           "'self'",
           'blob:',
+          supabaseOrigin,
         ],
 
         connectSrc: [
@@ -116,33 +127,23 @@ app.use(
 
 app.use(
   session({
-    store: new SQLiteStore({
-      db: 'sessions.db',
-      dir: path.join(__dirname, 'data'),
-      concurrentDB: true,
+    store: new PgSession({
+      pool,
+      tableName: 'session',
+      createTableIfMissing: true,
+      ttl: 30 * 24 * 60 * 60,
     }),
-
-    secret:
-      process.env.SESSION_SECRET ||
-      'fallback-secret-change-me',
-
+    secret: process.env.SESSION_SECRET,
     resave: false,
-
     saveUninitialized: false,
-
     cookie: {
       httpOnly: true,
-
       sameSite: 'lax',
-
-      secure:
-        process.env.NODE_ENV === 'production',
-
-      maxAge:
-        7 * 24 * 60 * 60 * 1000,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
     },
   })
-);
+)
 
 // ─────────────────────────────────────────────
 // Static files
@@ -175,9 +176,30 @@ app.set(
   path.join(__dirname, 'views')
 );
 
+let databaseReady;
+
+function initializeDatabaseOnce() {
+  if (!databaseReady) {
+    databaseReady = (async () => {
+      await testConnection();
+      await initDatabase();
+    })();
+  }
+  return databaseReady;
+}
+
 // ─────────────────────────────────────────────
 // Global middleware
 // ─────────────────────────────────────────────
+
+app.use(async (req, res, next) => {
+  try {
+    await initializeDatabaseOnce();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.use(attachUser);
 
@@ -190,6 +212,7 @@ app.use((req, res, next) => {
 
   res.locals.siteName =
     process.env.SITE_NAME || 'JoyBoy';
+  res.locals.supabaseUrl = process.env.SUPABASE_URL || '';
 
   res.locals.currentPath =
     req.path;
@@ -242,87 +265,6 @@ app.use(
   '/admin',
   adminRoutes
 );
-
-// ─────────────────────────────────────────────
-// STORAGE DIAGNOSTIC
-// ─────────────────────────────────────────────
-//
-// Open:
-// https://joyboyhack.onrender.com/debug/storage
-//
-// This tells us whether uploaded files actually
-// exist on the current Render instance.
-// ─────────────────────────────────────────────
-
-app.get('/debug/storage', (req, res) => {
-  function scanDirectory(directory) {
-    const fullPath = path.join(__dirname, directory);
-
-    if (!fs.existsSync(fullPath)) {
-      return {
-        exists: false,
-        path: fullPath,
-        files: [],
-      };
-    }
-
-    try {
-      const entries = fs.readdirSync(
-        fullPath,
-        { withFileTypes: true }
-      );
-
-      return {
-        exists: true,
-        path: fullPath,
-        count: entries.length,
-        files: entries.map((entry) => ({
-          name: entry.name,
-          type: entry.isDirectory()
-            ? 'directory'
-            : 'file',
-        })),
-      };
-    } catch (error) {
-      return {
-        exists: true,
-        path: fullPath,
-        error: error.message,
-        files: [],
-      };
-    }
-  }
-
-  res.json({
-    ok: true,
-
-    timestamp:
-      new Date().toISOString(),
-
-    hostname:
-      require('os').hostname(),
-
-    cwd:
-      process.cwd(),
-
-    directories: {
-      uploads:
-        scanDirectory('uploads'),
-
-      videos:
-        scanDirectory('uploads/videos'),
-
-      thumbnails:
-        scanDirectory('uploads/thumbnails'),
-
-      avatars:
-        scanDirectory('uploads/avatars'),
-
-      data:
-        scanDirectory('data'),
-    },
-  });
-});
 
 // ─────────────────────────────────────────────
 // Homepage
@@ -381,46 +323,18 @@ app.use(
 
 async function startServer() {
   try {
-    console.log(
-      '🔌 Connecting to Neon PostgreSQL...'
-    );
-
-    await testConnection();
-
-    console.log(
-      '🗄️ Initializing Neon database...'
-    );
-
-    await initDatabase();
-
-    console.log(
-      '✅ Database initialization complete'
-    );
-
-    app.listen(
-      PORT,
-      '0.0.0.0',
-      () => {
-        console.log(
-          `\n🎬 JoyBoy is running on port ${PORT}\n`
-        );
-
-        console.log(
-          `📦 Storage debug: http://localhost:${PORT}/debug/storage`
-        );
-      }
-    );
-
+    await initializeDatabaseOnce();
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`JoyBoy is running on port ${PORT}`);
+    });
   } catch (error) {
-    console.error(
-      '❌ Failed to start server:',
-      error
-    );
-
+    console.error('Failed to start server:', error);
     process.exit(1);
   }
 }
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
 
 module.exports = app;

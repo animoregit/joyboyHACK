@@ -126,15 +126,10 @@ router.post('/upload/sign', requireAuth, async (req, res) => {
     const byteSize = Number(size);
     const ext = path.extname(String(filename || '')).toLowerCase();
 
-    const videoTypes = new Set([
-      'video/mp4',
-      'video/webm',
-      'video/quicktime',
-      'video/x-msvideo',
-      'video/x-matroska',
-      'video/ogg',
-    ]);
-    const videoExtensions = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.ogv']);
+    // Limit uploads to formats with broad native browser playback support.
+    // We no longer transcode on the serverless upload path.
+    const videoTypes = new Set(['video/mp4', 'video/webm']);
+    const videoExtensions = new Set(['.mp4', '.webm']);
     const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
     const isThumbnail = kind === 'thumbnail';
     const maxSize = isThumbnail ? 5 * 1024 * 1024 : 50 * 1024 * 1024;
@@ -148,7 +143,7 @@ router.post('/upload/sign', requireAuth, async (req, res) => {
       });
     }
     if (isThumbnail ? (!imageTypes.has(mimeType) || ext !== '.jpg') : (!videoTypes.has(mimeType) || !videoExtensions.has(ext))) {
-      return res.status(415).json({ error: 'Unsupported file type.' });
+      return res.status(415).json({ error: isThumbnail ? 'Unsupported thumbnail format.' : 'Use an MP4 or WebM video for reliable browser playback.' });
     }
 
     const bucket = isThumbnail ? THUMBNAIL_BUCKET : VIDEO_BUCKET;
@@ -201,10 +196,7 @@ router.post('/upload/complete', requireAuth, async (req, res) => {
   if (!Number.isSafeInteger(byteSize) || byteSize <= 0 || byteSize > 50 * 1024 * 1024) {
     return res.status(400).json({ error: 'Invalid video size.' });
   }
-  const allowedMimeTypes = new Set([
-    'video/mp4', 'video/webm', 'video/quicktime',
-    'video/x-msvideo', 'video/x-matroska', 'video/ogg',
-  ]);
+  const allowedMimeTypes = new Set(['video/mp4', 'video/webm']);
   if (!allowedMimeTypes.has(mimeType)) {
     return res.status(415).json({ error: 'Unsupported video format.' });
   }

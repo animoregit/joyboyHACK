@@ -139,15 +139,19 @@ app.use((req, res, next) => {
 // Sessions
 // ─────────────────────────────────────────────
 
-app.use(
-  session({
-    store: new PgSession({
+const sessionStore = process.env.DATABASE_URL
+  ? new PgSession({
       pool,
       tableName: 'session',
       createTableIfMissing: true,
       ttl: 30 * 24 * 60 * 60,
-    }),
-    secret: process.env.SESSION_SECRET,
+    })
+  : undefined;
+
+app.use(
+  session({
+    ...(sessionStore ? { store: sessionStore } : {}),
+    secret: process.env.SESSION_SECRET || 'temporary-development-only-secret',
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -157,7 +161,7 @@ app.use(
       maxAge: 30 * 24 * 60 * 60 * 1000,
     },
   })
-)
+);
 
 // ─────────────────────────────────────────────
 // Static files

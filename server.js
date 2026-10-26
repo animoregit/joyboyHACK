@@ -2,12 +2,13 @@ require('dotenv').config();
 
 const express = require('express');
 const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
+const PgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
 const path = require('path');
 const fs = require('fs');
 
 const {
+  pool,
   initDatabase,
   testConnection,
 } = require('./config/database');
@@ -116,15 +117,18 @@ app.use(
 
 app.use(
   session({
-    store: new SQLiteStore({
-      db: 'sessions.db',
-      dir: path.join(__dirname, 'data'),
-      concurrentDB: true,
+    store: new PgSession({
+      pool,
+      tableName: 'user_sessions',
+      createTableIfMissing: true,
+      ttl: 30 * 24 * 60 * 60,
     }),
 
-    secret:
-      process.env.SESSION_SECRET ||
-      'fallback-secret-change-me',
+    secret: process.env.SESSION_SECRET || (
+      process.env.NODE_ENV === 'production'
+        ? (() => { throw new Error('SESSION_SECRET must be set in production.'); })()
+        : 'development-only-change-this-secret'
+    ),
 
     resave: false,
 
@@ -139,7 +143,7 @@ app.use(
         process.env.NODE_ENV === 'production',
 
       maxAge:
-        7 * 24 * 60 * 60 * 1000,
+        30 * 24 * 60 * 60 * 1000,
     },
   })
 );
@@ -154,11 +158,16 @@ app.use(
   )
 );
 
+// Only expose thumbnails and avatars as static files. Video files must go
+// through the authenticated stream route, which checks video visibility.
 app.use(
-  '/uploads',
-  express.static(
-    path.join(__dirname, 'uploads')
-  )
+  '/uploads/thumbnails',
+  express.static(path.join(__dirname, 'uploads', 'thumbnails'))
+);
+
+app.use(
+  '/uploads/avatars',
+  express.static(path.join(__dirname, 'uploads', 'avatars'))
 );
 
 // ─────────────────────────────────────────────
@@ -244,87 +253,6 @@ app.use(
 );
 
 // ─────────────────────────────────────────────
-// STORAGE DIAGNOSTIC
-// ─────────────────────────────────────────────
-//
-// Open:
-// https://joyboyhack.onrender.com/debug/storage
-//
-// This tells us whether uploaded files actually
-// exist on the current Render instance.
-// ─────────────────────────────────────────────
-
-app.get('/debug/storage', (req, res) => {
-  function scanDirectory(directory) {
-    const fullPath = path.join(__dirname, directory);
-
-    if (!fs.existsSync(fullPath)) {
-      return {
-        exists: false,
-        path: fullPath,
-        files: [],
-      };
-    }
-
-    try {
-      const entries = fs.readdirSync(
-        fullPath,
-        { withFileTypes: true }
-      );
-
-      return {
-        exists: true,
-        path: fullPath,
-        count: entries.length,
-        files: entries.map((entry) => ({
-          name: entry.name,
-          type: entry.isDirectory()
-            ? 'directory'
-            : 'file',
-        })),
-      };
-    } catch (error) {
-      return {
-        exists: true,
-        path: fullPath,
-        error: error.message,
-        files: [],
-      };
-    }
-  }
-
-  res.json({
-    ok: true,
-
-    timestamp:
-      new Date().toISOString(),
-
-    hostname:
-      require('os').hostname(),
-
-    cwd:
-      process.cwd(),
-
-    directories: {
-      uploads:
-        scanDirectory('uploads'),
-
-      videos:
-        scanDirectory('uploads/videos'),
-
-      thumbnails:
-        scanDirectory('uploads/thumbnails'),
-
-      avatars:
-        scanDirectory('uploads/avatars'),
-
-      data:
-        scanDirectory('data'),
-    },
-  });
-});
-
-// ─────────────────────────────────────────────
 // Homepage
 // ─────────────────────────────────────────────
 
@@ -405,9 +333,7 @@ async function startServer() {
           `\n🎬 JoyBoy is running on port ${PORT}\n`
         );
 
-        console.log(
-          `📦 Storage debug: http://localhost:${PORT}/debug/storage`
-        );
+        console.log('🔐 Sessions are stored in PostgreSQL with a 30-day expiry.');
       }
     );
 

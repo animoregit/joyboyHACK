@@ -2,18 +2,23 @@ require('dotenv').config();
 
 const express = require('express');
 const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
+const PgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
 const path = require('path');
 const fs = require('fs');
 
 const {
+  pool,
   initDatabase,
   testConnection,
 } = require('./config/database');
 
 const { attachUser } = require('./middleware/auth');
 const helpers = require('./utils/helpers');
+
+const supabaseOrigin = process.env.SUPABASE_URL
+  ? new URL(process.env.SUPABASE_URL).origin
+  : 'https://*.supabase.co';
 
 const app = express();
 
@@ -23,28 +28,27 @@ const app = express();
 
 app.set('trust proxy', 1);
 
-const PORT = process.env.PORT || 3000;
-
 // ─────────────────────────────────────────────
 // Ensure directories exist
 // ─────────────────────────────────────────────
 
-const dirs = [
-  'uploads/videos',
-  'uploads/thumbnails',
-  'uploads/avatars',
-  'data',
-];
+// Vercel's deployment filesystem is read-only. New uploads are stored in
+// Supabase Storage; local folders are only needed for local development.
+if (!process.env.VERCEL) {
+  const dirs = [
+    'uploads/videos',
+    'uploads/thumbnails',
+    'uploads/avatars',
+    'data',
+  ];
 
-dirs.forEach((dir) => {
-  const fullPath = path.join(__dirname, dir);
-
-  if (!fs.existsSync(fullPath)) {
-    fs.mkdirSync(fullPath, {
-      recursive: true,
-    });
-  }
-});
+  dirs.forEach((dir) => {
+    const fullPath = path.join(__dirname, dir);
+    if (!fs.existsSync(fullPath)) {
+      fs.mkdirSync(fullPath, { recursive: true });
+    }
+  });
+}
 
 // ─────────────────────────────────────────────
 // Security headers
@@ -76,15 +80,18 @@ app.use(
           "'self'",
           'data:',
           'blob:',
+          supabaseOrigin,
         ],
 
         mediaSrc: [
           "'self'",
           'blob:',
+          supabaseOrigin,
         ],
 
         connectSrc: [
           "'self'",
+          supabaseOrigin,
         ],
       },
     },
@@ -110,36 +117,42 @@ app.use(
   })
 );
 
+// Fail clearly instead of triggering a serverless function crash when required
+// deployment configuration is missing.
+app.use((req, res, next) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).send('JoyBoy is not configured: add DATABASE_URL (the existing Neon PostgreSQL connection string) to Vercel environment variables.');
+  }
+  if (!process.env.SESSION_SECRET) {
+    return res.status(503).send('JoyBoy is not configured: add SESSION_SECRET to Vercel environment variables.');
+  }
+  next();
+});
+
 // ─────────────────────────────────────────────
 // Sessions
 // ─────────────────────────────────────────────
 
+const sessionStore = process.env.DATABASE_URL
+  ? new PgSession({
+      pool,
+      tableName: 'session',
+      createTableIfMissing: true,
+      ttl: 30 * 24 * 60 * 60,
+    })
+  : undefined;
+
 app.use(
   session({
-    store: new SQLiteStore({
-      db: 'sessions.db',
-      dir: path.join(__dirname, 'data'),
-      concurrentDB: true,
-    }),
-
-    secret:
-      process.env.SESSION_SECRET ||
-      'fallback-secret-change-me',
-
+    ...(sessionStore ? { store: sessionStore } : {}),
+    secret: process.env.SESSION_SECRET || 'temporary-development-only-secret',
     resave: false,
-
     saveUninitialized: false,
-
     cookie: {
       httpOnly: true,
-
       sameSite: 'lax',
-
-      secure:
-        process.env.NODE_ENV === 'production',
-
-      maxAge:
-        7 * 24 * 60 * 60 * 1000,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
     },
   })
 );
@@ -154,12 +167,9 @@ app.use(
   )
 );
 
-app.use(
-  '/uploads',
-  express.static(
-    path.join(__dirname, 'uploads')
-  )
-);
+if (!process.env.VERCEL) {
+  app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+}
 
 // ─────────────────────────────────────────────
 // View engine
@@ -175,9 +185,30 @@ app.set(
   path.join(__dirname, 'views')
 );
 
+let databaseReady;
+
+function initializeDatabaseOnce() {
+  if (!databaseReady) {
+    databaseReady = (async () => {
+      await testConnection();
+      await initDatabase();
+    })();
+  }
+  return databaseReady;
+}
+
 // ─────────────────────────────────────────────
 // Global middleware
 // ─────────────────────────────────────────────
+
+app.use(async (req, res, next) => {
+  try {
+    await initializeDatabaseOnce();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.use(attachUser);
 
@@ -190,6 +221,7 @@ app.use((req, res, next) => {
 
   res.locals.siteName =
     process.env.SITE_NAME || 'JoyBoy';
+  res.locals.supabaseUrl = process.env.SUPABASE_URL || '';
 
   res.locals.currentPath =
     req.path;
@@ -244,87 +276,6 @@ app.use(
 );
 
 // ─────────────────────────────────────────────
-// STORAGE DIAGNOSTIC
-// ─────────────────────────────────────────────
-//
-// Open:
-// https://joyboyhack.onrender.com/debug/storage
-//
-// This tells us whether uploaded files actually
-// exist on the current Render instance.
-// ─────────────────────────────────────────────
-
-app.get('/debug/storage', (req, res) => {
-  function scanDirectory(directory) {
-    const fullPath = path.join(__dirname, directory);
-
-    if (!fs.existsSync(fullPath)) {
-      return {
-        exists: false,
-        path: fullPath,
-        files: [],
-      };
-    }
-
-    try {
-      const entries = fs.readdirSync(
-        fullPath,
-        { withFileTypes: true }
-      );
-
-      return {
-        exists: true,
-        path: fullPath,
-        count: entries.length,
-        files: entries.map((entry) => ({
-          name: entry.name,
-          type: entry.isDirectory()
-            ? 'directory'
-            : 'file',
-        })),
-      };
-    } catch (error) {
-      return {
-        exists: true,
-        path: fullPath,
-        error: error.message,
-        files: [],
-      };
-    }
-  }
-
-  res.json({
-    ok: true,
-
-    timestamp:
-      new Date().toISOString(),
-
-    hostname:
-      require('os').hostname(),
-
-    cwd:
-      process.cwd(),
-
-    directories: {
-      uploads:
-        scanDirectory('uploads'),
-
-      videos:
-        scanDirectory('uploads/videos'),
-
-      thumbnails:
-        scanDirectory('uploads/thumbnails'),
-
-      avatars:
-        scanDirectory('uploads/avatars'),
-
-      data:
-        scanDirectory('data'),
-    },
-  });
-});
-
-// ─────────────────────────────────────────────
 // Homepage
 // ─────────────────────────────────────────────
 
@@ -375,52 +326,5 @@ app.use(
   }
 );
 
-// ─────────────────────────────────────────────
-// Start server
-// ─────────────────────────────────────────────
-
-async function startServer() {
-  try {
-    console.log(
-      '🔌 Connecting to Neon PostgreSQL...'
-    );
-
-    await testConnection();
-
-    console.log(
-      '🗄️ Initializing Neon database...'
-    );
-
-    await initDatabase();
-
-    console.log(
-      '✅ Database initialization complete'
-    );
-
-    app.listen(
-      PORT,
-      '0.0.0.0',
-      () => {
-        console.log(
-          `\n🎬 JoyBoy is running on port ${PORT}\n`
-        );
-
-        console.log(
-          `📦 Storage debug: http://localhost:${PORT}/debug/storage`
-        );
-      }
-    );
-
-  } catch (error) {
-    console.error(
-      '❌ Failed to start server:',
-      error
-    );
-
-    process.exit(1);
-  }
-}
-
-startServer();
 
 module.exports = app;

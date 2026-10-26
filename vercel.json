@@ -1,10 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
+  "redirects": [
     {
       "source": "/",
-      "destination": "https://joyboyhack.onrender.com/auth/login"
-    },
+      "destination": "/auth/login",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
     {
       "source": "/:path*",
       "destination": "https://joyboyhack.onrender.com/:path*"

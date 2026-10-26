@@ -28,8 +28,6 @@ const app = express();
 
 app.set('trust proxy', 1);
 
-const PORT = process.env.PORT || 3000;
-
 // ─────────────────────────────────────────────
 // Ensure directories exist
 // ─────────────────────────────────────────────
@@ -328,24 +326,5 @@ app.use(
   }
 );
 
-// ─────────────────────────────────────────────
-// Start server
-// ─────────────────────────────────────────────
-
-async function startServer() {
-  try {
-    await initializeDatabaseOnce();
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`JoyBoy is running on port ${PORT}`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
-}
-
-if (require.main === module && process.env.VERCEL !== '1' && !process.env.VERCEL_ENV && !process.env.VERCEL_URL) {
-  startServer();
-}
 
 module.exports = app;

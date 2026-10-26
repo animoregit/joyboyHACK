@@ -6,7 +6,8 @@
     <div class="video-player-wrapper" id="video-player-wrapper">
       <video id="video-player" class="video-player" controls preload="metadata"
              poster="<%= video.thumbnail ? helpers.thumbnailUrl(video.thumbnail) : '' %>">
-        <source src="/videos/stream/<%= video.id %>" type="<%= video.mime_type %>">
+        <% const playbackMime = ['video/mp4', 'video/webm'].includes(String(video.mime_type || '').toLowerCase()) ? String(video.mime_type).toLowerCase() : ''; %>
+        <source src="/videos/stream/<%= video.id %>"<% if (playbackMime) { %> type="<%= playbackMime %>"<% } %>>
         Your browser does not support the video tag.
       </video>
     </div>

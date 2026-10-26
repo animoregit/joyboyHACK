@@ -13,12 +13,12 @@
     </div>
   <% } %>
 
-  <form action="/users/<%= profileUser.id %>/edit" method="POST" enctype="multipart/form-data" class="edit-form" id="edit-profile-form">
+  <form action="/users/<%= profileUser.id %>/edit" method="POST" class="edit-form" id="edit-profile-form">
     <!-- Avatar Upload -->
     <div class="avatar-upload-section">
       <div class="avatar-upload-preview">
         <% if (profileUser.avatar) { %>
-          <img src="/uploads/avatars/<%= profileUser.avatar %>" alt="<%= profileUser.username %>" class="avatar-upload-img" id="avatar-preview">
+          <img src="<%= helpers.avatarUrl(profileUser.avatar) %>" alt="<%= profileUser.username %>" class="avatar-upload-img" id="avatar-preview">
         <% } else { %>
           <div class="avatar-default avatar-lg" id="avatar-preview"><%= profileUser.username.charAt(0).toUpperCase() %></div>
         <% } %>

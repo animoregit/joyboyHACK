@@ -1,65 +1,70 @@
 const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('ffmpeg-static');
+const ffprobe = require('ffprobe-static');
 const path = require('path');
 const fs = require('fs');
 
+if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
+if (ffprobe && ffprobe.path) ffmpeg.setFfprobePath(ffprobe.path);
+
 /**
- * Generate a thumbnail from a video file.
- * Extracts a single frame at 25% of the video duration.
- *
- * @param {string} videoPath - Absolute path to the video file
- * @param {string} thumbnailFilename - Desired thumbnail filename (e.g., "uuid.jpg")
- * @returns {Promise<{thumbnailPath: string, duration: number}>}
+ * Generate a thumbnail from an uploaded video.
+ * FFmpeg and FFprobe binaries are bundled as npm dependencies so this works
+ * on Render without relying on system-installed executables.
  */
-function generateThumbnail(videoPath, thumbnailFilename) {
+async function generateThumbnail(videoPath, thumbnailFilename) {
   const thumbnailDir = path.join(__dirname, '..', 'uploads', 'thumbnails');
-  const thumbnailPath = path.join(thumbnailDir, thumbnailFilename);
+  const thumbnailPath = path.join(thumbnailDir, path.basename(thumbnailFilename));
 
-  return new Promise((resolve, reject) => {
-    // First, get the video duration
-    ffmpeg.ffprobe(videoPath, (err, metadata) => {
-      if (err) {
-        console.warn('FFprobe failed (FFmpeg may not be installed):', err.message);
-        // Return without thumbnail — graceful fallback
-        return resolve({ thumbnailPath: null, duration: null });
-      }
+  await fs.promises.mkdir(thumbnailDir, { recursive: true });
 
-      const duration = metadata.format.duration || 0;
-      const seekTime = Math.max(0, duration * 0.25); // 25% into the video
+  const duration = await getVideoDuration(videoPath);
+  if (duration === null) {
+    console.warn('Thumbnail skipped: video duration could not be read.');
+    return { thumbnailPath: null, duration: null };
+  }
 
-      ffmpeg(videoPath)
-        .seekInput(seekTime)
-        .frames(1)
-        .size('640x360')
-        .output(thumbnailPath)
-        .on('end', () => {
+  // Seek slightly into the video; 0 seconds can be a black/empty frame.
+  const seekTime = Math.min(Math.max(duration * 0.1, 0.1), Math.max(duration - 0.1, 0));
+
+  return new Promise((resolve) => {
+    ffmpeg(videoPath)
+      .seekInput(seekTime)
+      .frames(1)
+      .outputOptions(['-y'])
+      .size('640x360')
+      .output(thumbnailPath)
+      .on('end', async () => {
+        try {
+          const stat = await fs.promises.stat(thumbnailPath);
+          if (!stat.isFile() || stat.size === 0) {
+            return resolve({ thumbnailPath: null, duration });
+          }
           resolve({
-            thumbnailPath: `thumbnails/${thumbnailFilename}`,
-            duration: duration,
+            thumbnailPath: `thumbnails/${path.basename(thumbnailFilename)}`,
+            duration,
           });
-        })
-        .on('error', (ffmpegErr) => {
-          console.warn('Thumbnail generation failed:', ffmpegErr.message);
-          // Graceful fallback — return duration if we got it
-          resolve({ thumbnailPath: null, duration: duration });
-        })
-        .run();
-    });
+        } catch {
+          resolve({ thumbnailPath: null, duration });
+        }
+      })
+      .on('error', (error) => {
+        console.error('Thumbnail generation failed:', error.message);
+        resolve({ thumbnailPath: null, duration });
+      })
+      .run();
   });
 }
 
-/**
- * Get video duration only (without generating thumbnail).
- * @param {string} videoPath
- * @returns {Promise<number|null>}
- */
 function getVideoDuration(videoPath) {
   return new Promise((resolve) => {
-    ffmpeg.ffprobe(videoPath, (err, metadata) => {
-      if (err) {
-        console.warn('FFprobe failed:', err.message);
+    ffmpeg.ffprobe(videoPath, (error, metadata) => {
+      if (error) {
+        console.error('FFprobe failed:', error.message);
         return resolve(null);
       }
-      resolve(metadata.format.duration || null);
+      const duration = Number(metadata?.format?.duration);
+      resolve(Number.isFinite(duration) && duration >= 0 ? duration : null);
     });
   });
 }

@@ -96,7 +96,104 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ── Upload Form with Progress ──
+  async function requestSignedUpload(endpoint, kind, file) {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind,
+        filename: file.name,
+        mimeType: file.type,
+        size: file.size,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || 'Could not prepare file upload.');
+    return payload;
+  }
+
+  function uploadDirectly(uploadInfo, file, onProgress = () => {}) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', uploadInfo.signedUrl);
+      xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+      if (uploadInfo.publishableKey) xhr.setRequestHeader('apikey', uploadInfo.publishableKey);
+      xhr.setRequestHeader('x-upsert', 'false');
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+      });
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error('Storage upload failed (' + xhr.status + '). Please retry.'));
+      });
+      xhr.addEventListener('error', () => reject(new Error('Could not reach Supabase Storage. Check your connection and Storage configuration.')));
+      xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled.')));
+      xhr.send(file);
+    });
+  }
+
+  function createVideoThumbnail(file) {
+    return new Promise((resolve) => {
+      const objectUrl = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+      let finished = false;
+      let duration = null;
+
+      const cleanup = (thumbnailFile) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        video.removeAttribute('src');
+        video.load();
+        URL.revokeObjectURL(objectUrl);
+        resolve({ duration, thumbnailFile });
+      };
+
+      const drawFrame = () => {
+        try {
+          if (!video.videoWidth || !video.videoHeight) return cleanup(null);
+          const canvas = document.createElement('canvas');
+          canvas.width = 640;
+          canvas.height = 360;
+          const context = canvas.getContext('2d');
+          const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+          const width = video.videoWidth * scale;
+          const height = video.videoHeight * scale;
+          context.drawImage(video, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+          canvas.toBlob((blob) => {
+            if (!blob) return cleanup(null);
+            cleanup(new File([blob], 'thumbnail.jpg', { type: 'image/jpeg' }));
+          }, 'image/jpeg', 0.82);
+        } catch (_) {
+          cleanup(null);
+        }
+      };
+
+      const timeout = setTimeout(() => cleanup(null), 12000);
+      video.addEventListener('error', () => cleanup(null), { once: true });
+      video.addEventListener('loadedmetadata', () => {
+        duration = Number.isFinite(video.duration) ? video.duration : null;
+        if (duration === null || duration <= 0.05) {
+          video.addEventListener('loadeddata', drawFrame, { once: true });
+          return;
+        }
+        const target = Math.min(Math.max(duration * 0.1, 0.1), Math.max(duration - 0.1, 0));
+        if (target <= 0.02) video.addEventListener('loadeddata', drawFrame, { once: true });
+        else {
+          video.addEventListener('seeked', drawFrame, { once: true });
+          try { video.currentTime = target; } catch (_) { cleanup(null); }
+        }
+      }, { once: true });
+      video.src = objectUrl;
+      video.load();
+    });
+  }
+
+  // ── Upload Form: send large media directly to Supabase Storage ──
   const uploadForm = document.getElementById('upload-form');
   const progressContainer = document.getElementById('progress-container');
   const progressFill = document.getElementById('progress-fill');
@@ -104,76 +201,126 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnUploadSubmit = document.getElementById('btn-upload-submit');
 
   if (uploadForm && progressContainer) {
-    uploadForm.addEventListener('submit', function(e) {
-      e.preventDefault();
+    uploadForm.addEventListener('submit', async function(event) {
+      event.preventDefault();
+      const videoFile = videoInput?.files?.[0];
+      const title = this.querySelector('[name="title"]')?.value?.trim();
+      if (!videoFile) {
+        if (progressText) progressText.textContent = 'Choose a video first.';
+        return;
+      }
+      if (!title) {
+        if (progressText) progressText.textContent = 'Video title is required.';
+        this.querySelector('[name="title"]')?.focus();
+        return;
+      }
+      if (videoFile.size > 50 * 1024 * 1024) {
+        if (progressText) progressText.textContent = 'Video uploads are limited to 50 MB on the current storage plan.';
+        return;
+      }
 
-      const formData = new FormData(this);
-      const xhr = new XMLHttpRequest();
-
-      // Show progress
+      const setProgress = (percent, message) => {
+        if (progressFill) progressFill.style.width = percent + '%';
+        if (progressText) progressText.textContent = message || (percent + '%');
+      };
       progressContainer.style.display = 'flex';
       if (btnUploadSubmit) {
         btnUploadSubmit.disabled = true;
         btnUploadSubmit.textContent = 'Uploading...';
       }
 
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable) {
-          const percent = Math.round((e.loaded / e.total) * 100);
-          progressFill.style.width = percent + '%';
-          progressText.textContent = percent + '%';
-        }
-      });
+      try {
+        setProgress(2, 'Preparing video...');
+        const thumbnailResult = await createVideoThumbnail(videoFile);
+        const videoUpload = await requestSignedUpload('/videos/upload/sign', 'video', videoFile);
+        setProgress(5, 'Uploading video...');
+        await uploadDirectly(videoUpload, videoFile, (p) => setProgress(5 + Math.round(p * 0.8), 'Uploading video ' + p + '%'));
 
-      xhr.addEventListener('load', () => {
-        if (xhr.status >= 200 && xhr.status < 400) {
-          // Follow redirect
-          progressText.textContent = 'Processing...';
-          window.location.href = xhr.responseURL;
-        } else {
-          progressText.textContent = 'Upload failed';
-          if (btnUploadSubmit) {
-            btnUploadSubmit.disabled = false;
-            btnUploadSubmit.textContent = 'Upload Video';
+        let thumbnailPath = null;
+        if (thumbnailResult.thumbnailFile) {
+          try {
+            const thumbnailUpload = await requestSignedUpload('/videos/upload/sign', 'thumbnail', thumbnailResult.thumbnailFile);
+            setProgress(87, 'Saving thumbnail...');
+            await uploadDirectly(thumbnailUpload, thumbnailResult.thumbnailFile);
+            thumbnailPath = thumbnailUpload.path;
+          } catch (thumbnailError) {
+            console.warn('Thumbnail upload skipped:', thumbnailError.message);
           }
         }
-      });
 
-      xhr.addEventListener('error', () => {
-        progressText.textContent = 'Upload failed';
+        setProgress(92, 'Saving video details...');
+        const completeResponse = await fetch('/videos/upload/complete', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title,
+            description: this.querySelector('[name="description"]')?.value || '',
+            visibility: this.querySelector('[name="visibility"]')?.value || 'public',
+            videoPath: videoUpload.path,
+            thumbnailPath,
+            duration: thumbnailResult.duration,
+            fileSize: videoFile.size,
+            mimeType: videoFile.type,
+          }),
+        });
+        const completePayload = await completeResponse.json().catch(() => ({}));
+        if (!completeResponse.ok) throw new Error(completePayload.error || 'Could not save video details.');
+        setProgress(100, 'Done. Opening video...');
+        window.location.assign(completePayload.redirectUrl || ('/videos/' + completePayload.videoId));
+      } catch (error) {
+        setProgress(0, error.message || 'Upload failed. Please try again.');
         if (btnUploadSubmit) {
           btnUploadSubmit.disabled = false;
           btnUploadSubmit.textContent = 'Upload Video';
         }
-      });
-
-      xhr.open('POST', '/videos/upload');
-      xhr.send(formData);
+      }
     });
   }
 
-  // ── Avatar Preview on Edit Profile ──
-  const avatarInput = document.getElementById('avatar');
-  const avatarPreview = document.getElementById('avatar-preview');
+  // ── Persist profile avatars in Supabase Storage ──
+  const editProfileForm = document.getElementById('edit-profile-form');
+  if (editProfileForm && avatarInput) {
+    editProfileForm.addEventListener('submit', async (event) => {
+      const file = avatarInput.files?.[0];
+      if (!file) return;
+      event.preventDefault();
 
-  if (avatarInput && avatarPreview) {
-    avatarInput.addEventListener('change', () => {
-      const file = avatarInput.files[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          if (avatarPreview.tagName === 'IMG') {
-            avatarPreview.src = e.target.result;
-          } else {
-            // Replace default avatar div with img
-            const img = document.createElement('img');
-            img.src = e.target.result;
-            img.className = 'avatar-upload-img';
-            img.id = 'avatar-preview';
-            avatarPreview.parentNode.replaceChild(img, avatarPreview);
-          }
-        };
-        reader.readAsDataURL(file);
+      const saveButton = document.getElementById('btn-save-profile');
+      if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
+        alert('Choose a JPG, PNG, WebP, or GIF image.');
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        alert('Avatar images must be smaller than 5 MB.');
+        return;
+      }
+      if (saveButton) {
+        saveButton.disabled = true;
+        saveButton.textContent = 'Uploading avatar...';
+      }
+
+      try {
+        const userId = editProfileForm.action.match(/\\/users\\/(\\d+)\\/edit/)?.[1];
+        if (!userId) throw new Error('Could not identify the profile.');
+        const signed = await requestSignedUpload('/users/' + userId + '/avatar-sign', 'avatar', file);
+        await uploadDirectly(signed, file);
+        let avatarPath = editProfileForm.querySelector('input[name="avatarPath"]');
+        if (!avatarPath) {
+          avatarPath = document.createElement('input');
+          avatarPath.type = 'hidden';
+          avatarPath.name = 'avatarPath';
+          editProfileForm.appendChild(avatarPath);
+        }
+        avatarPath.value = signed.path;
+        avatarInput.value = '';
+        HTMLFormElement.prototype.submit.call(editProfileForm);
+      } catch (error) {
+        alert(error.message || 'Avatar upload failed.');
+        if (saveButton) {
+          saveButton.disabled = false;
+          saveButton.textContent = 'Save Changes';
+        }
       }
     });
   }

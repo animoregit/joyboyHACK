@@ -226,7 +226,7 @@ router.post(
       });
     } catch (error) {
       if (error.code === 'SUPABASE_STORAGE_NOT_CONFIGURED') {
-        return res.status(503).json({ error: 'Supabase Storage is not configured yet. Add SUPABASE_SERVICE_ROLE_KEY in Vercel.' });
+        return res.status(503).json({ error: 'Media storage is temporarily unavailable. Please try again later.' });
       }
       console.error('Create avatar upload URL error:', error);
       return res.status(500).json({ error: 'Could not prepare avatar upload.' });

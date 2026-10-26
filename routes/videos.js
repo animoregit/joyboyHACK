@@ -566,7 +566,7 @@ router.post(
         const supabase = getSupabaseAdmin();
         const { error } = await supabase.storage.from(THUMBNAIL_BUCKET).remove([video.thumbnail]);
         if (error) console.warn('Thumbnail cleanup failed:', error.message);
-      } else if (video.thumbnail && !/^https?:\\/\\//i.test(video.thumbnail)) {
+      } else if (video.thumbnail && !/^https?:\/\//i.test(video.thumbnail)) {
         const localThumbnail = path.join(__dirname, '..', 'uploads', path.basename(video.thumbnail));
         if (fs.existsSync(localThumbnail)) fs.unlinkSync(localThumbnail);
       }
